@@ -38,7 +38,7 @@ body:
       required: true
 
   - type: dropdown
-    id: criticality
+    id: Criticality
     attributes:
       label: How would you describe the priority of this feature request
       options:
@@ -49,14 +49,26 @@ body:
       required: true
 
   - type: textarea
-    id: problem
+    id: Problem
     attributes:
       label: Please provide a clear description of problem you would like to solve.
       description: Real usage examples are especially helpful. If there is an existing function you use in a different library, please also provide a link.
+    validations:
+      required: true
 
   - type: textarea
-    id: alternatives
+    id: Value
+    attributes:
+      label: Please provide a clear description of value this adds to users.
+      description: Share any qualittive or quantitative benefits of this functionality and to which type of users.
+    validations:
+      required: true
+      
+  - type: textarea
+    id: Alternatives
     attributes:
       label: Describe any alternatives you have considered
       description: List any other libraries, or approaches you have looked at or tried.
       placeholder: I have looked at library xyz and qrs, but they do not offer GPU acceleration
+    validations:
+      required: true
