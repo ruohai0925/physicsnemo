@@ -203,10 +203,6 @@ def main(cfg: DictConfig) -> None:
         model_args.update(OmegaConf.to_container(cfg.model.model_args))
 
     optimization_mode = False
-    # optimization mode:
-    # if hasattr(cfg.training.perf, "torch_compile") and cfg.training.perf.torch_compile:
-    #      model_args.update({"use_apex_gn":True,"fused_conv_bias":True,"model_type":"SongUNetPosOptEmbd" })
-    #      optimization_mode = True
     use_torch_compile = False
     use_apex_gn = False
     profile_mode = False
@@ -364,6 +360,7 @@ def main(cfg: DictConfig) -> None:
     else:
         use_patch_grad_acc = False
 
+    # Instantiate the loss function
     if cfg.model.name in (
         "diffusion",
         "patched_diffusion",
