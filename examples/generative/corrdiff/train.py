@@ -345,9 +345,25 @@ def main(cfg: DictConfig) -> None:
     else:
         patch_nums_iter = [patch_num]
 
-    use_patch_grad_acc = False
+    use_patch_grad_acc = None
     if len(patch_nums_iter) > 1:
+        if not patching:
+            raise ValueError(
+                "'patch_num' must be set to 1 if patching is not used."
+            )
+        # Prevent patch gradient accumulation for regression training
+        if cfg.model.name in {
+            "regression",
+            "lt_aware_ce_regression",
+        }:
+            raise ValueError(
+                f"Cannot use patch gradient accumulation for regression training: "
+                f"'patch_num' must be set to 1."
+            )
         use_patch_grad_acc = True
+    else:
+        use_patch_grad_acc = False
+        
 
     # Instantiate the loss function
     # if cfg.model.name == "patched_diffusion" and len(patch_nums_iter)>1:
@@ -465,9 +481,10 @@ def main(cfg: DictConfig) -> None:
                                 "net": model,
                                 "img_clean": img_clean,
                                 "img_lr": img_lr,
-                                "augment_pipe": None,
-                                "use_patch_grad_acc": use_patch_grad_acc,
+                                "augment_pipe": None
                             }
+                            if use_patch_grad_acc is not None:
+                                loss_fn_kwargs["use_patch_grad_acc"] = use_patch_grad_acc
 
                             if lead_time_label:
                                 lead_time_label = (
@@ -610,6 +627,8 @@ def main(cfg: DictConfig) -> None:
                                         "augment_pipe": None,
                                         "use_patch_grad_acc": use_patch_grad_acc,
                                     }
+                                    if use_patch_grad_acc is not None:
+                                        loss_valid_kwargs["use_patch_grad_acc"] = use_patch_grad_acc
                                     if lead_time_label_valid:
                                         lead_time_label_valid = (
                                             lead_time_label_valid[0]
