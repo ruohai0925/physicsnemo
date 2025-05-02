@@ -307,8 +307,10 @@ def main(cfg: DictConfig) -> None:
         logger0.success("Loaded the pre-trained regression model")
 
     if use_torch_compile:
-        model = torch.compile(model)
-        regression_net = torch.compile(regression_net)
+        if model:
+            model = torch.compile(model)
+        if regression_net:
+            regression_net = torch.compile(regression_net)
 
     # Compute the number of required gradient accumulation rounds
     # It is automatically used if batch_size_per_gpu * dist.world_size < total_batch_size
