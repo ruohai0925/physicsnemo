@@ -341,22 +341,27 @@ def main(cfg: DictConfig) -> None:
     else:
         patch_nums_iter = [patch_num]
 
-    use_patch_grad_acc = None
-    if len(patch_nums_iter) > 1:
-        if not patching:
-            logger0.info(
-                "Patching is not enabled: patch gradient accumulation ignored."
-            )
+    # Set patch gradient accumulation only for patched diffusion models
+    if cfg.model.name in {
+        "patched_diffusion",
+        "lt_aware_patched_diffusion",
+    }:
+        if len(patch_nums_iter) > 1:
+            if not patching:
+                logger0.info(
+                    "Patching is not enabled: patch gradient accumulation automatically disabled."
+                )
+                use_patch_grad_acc = False
+            else:
+                use_patch_grad_acc = True
+        else:
             use_patch_grad_acc = False
-        # Prevent use of patch gradient accumulation for regression
-        if cfg.model.name in {
-            "regression",
-            "lt_aware_ce_regression",
-        }:
-            logger0.info("Regression training: patch gradient accumulation ignored.")
-        use_patch_grad_acc = None
+    # Automatically disable patch gradient accumulation for non-patched models
     else:
-        use_patch_grad_acc = False
+        logger0.info(
+            "Training a non-patched model: patch gradient accumulation automatically disabled."
+        )
+        use_patch_grad_acc = None
 
     # Instantiate the loss function
     if cfg.model.name in (
