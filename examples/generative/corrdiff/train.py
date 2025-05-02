@@ -48,8 +48,6 @@ from helpers.train_helpers import (
     is_time_for_periodic_task,
 )
 import nvtx
-import contextlib
-import pdb
 
 
 torch._dynamo.reset()
@@ -355,9 +353,7 @@ def main(cfg: DictConfig) -> None:
             "regression",
             "lt_aware_ce_regression",
         }:
-            logger0.info(
-                "Regression training: patch gradient accumulation ignored."
-            )
+            logger0.info("Regression training: patch gradient accumulation ignored.")
         use_patch_grad_acc = None
     else:
         use_patch_grad_acc = False
@@ -473,10 +469,12 @@ def main(cfg: DictConfig) -> None:
                                 "net": model,
                                 "img_clean": img_clean,
                                 "img_lr": img_lr,
-                                "augment_pipe": None
+                                "augment_pipe": None,
                             }
                             if use_patch_grad_acc is not None:
-                                loss_fn_kwargs["use_patch_grad_acc"] = use_patch_grad_acc
+                                loss_fn_kwargs[
+                                    "use_patch_grad_acc"
+                                ] = use_patch_grad_acc
 
                             if lead_time_label:
                                 lead_time_label = (
@@ -620,7 +618,9 @@ def main(cfg: DictConfig) -> None:
                                         "use_patch_grad_acc": use_patch_grad_acc,
                                     }
                                     if use_patch_grad_acc is not None:
-                                        loss_valid_kwargs["use_patch_grad_acc"] = use_patch_grad_acc
+                                        loss_valid_kwargs[
+                                            "use_patch_grad_acc"
+                                        ] = use_patch_grad_acc
                                     if lead_time_label_valid:
                                         lead_time_label_valid = (
                                             lead_time_label_valid[0]
