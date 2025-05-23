@@ -482,7 +482,7 @@ def main(cfg: DictConfig) -> None:
     gpu_handle = nvmlDeviceGetHandleByIndex(dist.device.index)
 
     compute_scaling_factors(
-        cfg, cfg.data_processor.output_dir, use_cache=cfg.data_processor.use_cache
+        cfg, cfg.data.input_dir, use_cache=cfg.data_processor.use_cache
     )
     model_type = cfg.model.model_type
 
@@ -523,12 +523,12 @@ def main(cfg: DictConfig) -> None:
         "outputs", cfg.project.name, "surface_scaling_factors.npy"
     )
     if os.path.exists(vol_save_path):
-        vol_factors = np.load(vol_save_path)
+        vol_factors = np.load(vol_save_path, allow_pickle=True)
     else:
         vol_factors = None
 
     if os.path.exists(surf_save_path):
-        surf_factors = np.load(surf_save_path)
+        surf_factors = np.load(surf_save_path, allow_pickle=True)
     else:
         surf_factors = None
 

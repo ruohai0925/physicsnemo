@@ -596,8 +596,8 @@ def main(cfg: DictConfig) -> None:
     vol_save_path = os.path.join(cfg.project_dir, "volume_scaling_factors.npy")
     surf_save_path = os.path.join(cfg.project_dir, "surface_scaling_factors.npy")
     if os.path.exists(vol_save_path) and os.path.exists(surf_save_path):
-        vol_factors = np.load(vol_save_path)
-        surf_factors = np.load(surf_save_path)
+        vol_factors = np.load(vol_save_path, allow_pickle=True)
+        surf_factors = np.load(surf_save_path, allow_pickle=True)
     else:
         vol_factors = None
         surf_factors = None
