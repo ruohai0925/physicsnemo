@@ -14,6 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ===================================================================
+# 导入必要的库和模块
+# ===================================================================
 import torch
 import os.path
 import warp as wp
@@ -33,25 +36,36 @@ from physicsnemo.datapipes.benchmarks.kernels.utils import (
     threshold_3d,
 )
 
+"""
+Nested FNO工具模块说明：
+- NestedDarcyDataset: 嵌套Darcy数据集类，支持多分辨率数据加载
+- GridValidator: 网格验证器，用于验证和可视化
+- DarcyInset2D: 扩展的Darcy2D数据管道，支持局部细化区域生成
+- 支持多级模型训练和推理
+"""
+
 
 class NestedDarcyDataset:
-    """Nested Darcy Dataset
-
-    A Dataset class for loading nested Darcy data generated with generate_nested_darcy.py
-    during training. The method takes care of loading the correct level and associated
-    information from its parent level.
-
+    """
+    嵌套Darcy数据集类
+    
+    用于加载由generate_nested_darcy.py生成的多分辨率嵌套Darcy数据。
+    该类负责加载正确的细化级别和来自父级的相关信息。
+    
     Parameters
     ----------
+    mode : str
+        模式："train"（训练）或"eval"（评估）
     data_path : str
-        Path to numpy dict file containing the data
-    level : int, optional
-        Refinement level which shall be loaded
+        包含数据的numpy字典文件路径
+    model_name : str
+        模型名称（"ref0"或"ref1"），用于确定加载哪个级别
     norm : Dict, optional
-        mean and standard deviation for each channel to normalise input and target
+        每个通道的均值和标准差，用于归一化输入和目标
     log : PythonLogger
-        logger for command line output
-
+        命令行输出日志器
+    parent_prediction : FloatTensor, optional
+        父级预测结果，用于ref1级别的评估模式
     """
 
     def __init__(
@@ -63,58 +77,93 @@ class NestedDarcyDataset:
         log: PythonLogger = None,
         parent_prediction: FloatTensor = None,
     ) -> None:
+        # 初始化分布式管理器
         self.dist = DistributedManager()
         self.data_path = os.path.abspath(data_path)
         self.model_name = model_name
-        # self.level = level
         self.norm = norm
         self.log = log
         self.mode = mode
+        
+        # 验证模式参数
         assert self.mode in [
             "train",
             "eval",
-        ], "mode in NestedDarcyDataset must be train or eval."
+        ], "NestedDarcyDataset中的mode必须是train或eval."
 
+        # 如果是评估模式且不是ref0级别，需要父级预测结果
         if mode == "eval" and int(self.model_name[-1]) > 0:
             assert parent_prediction is not None, (
-                f"pass parent result to evaluate level {int(self.model_name[-1])}"
+                f"评估级别 {int(self.model_name[-1])} 需要传递父级结果"
             )
             parent_prediction = parent_prediction.detach().cpu().numpy()
+        
+        # 加载数据集
         self.load_dataset(parent_prediction)
 
     def load_dataset(self, parent_prediction: FloatTensor = None) -> None:
+        """
+        加载嵌套Darcy数据集
+        
+        根据模型级别加载相应的数据：
+        - ref0: 加载全局粗分辨率数据
+        - ref1: 加载局部细化数据 + 父级预测
+        
+        Parameters
+        ----------
+        parent_prediction : FloatTensor, optional
+            父级预测结果，用于ref1级别的评估模式
+        """
+        # 加载numpy数据文件
         try:
             contents = np.load(self.data_path, allow_pickle=True).item()
         except IOError as err:
-            self.log.error(f"Unable to find or load file {self.data_path}")
+            self.log.error(f"无法找到或加载文件 {self.data_path}")
             exit()
 
-        # load input varibales, copy to device and normalise
-        dat = contents["fields"]
-        self.ref_fac = contents["meta"]["ref_fac"]
-        self.buffer = contents["meta"]["buffer"]
-        self.fine_res = contents["meta"]["fine_res"]
+        # ===================================================================
+        # 1. 提取元数据和字段数据
+        # ===================================================================
+        dat = contents["fields"]                    # 字段数据
+        self.ref_fac = contents["meta"]["ref_fac"]  # 细化因子
+        self.buffer = contents["meta"]["buffer"]    # 缓冲区大小
+        self.fine_res = contents["meta"]["fine_res"] # 细化分辨率
 
         mod = self.model_name
         perm, darc, par_pred, self.position = [], [], [], {}
+        
+        # ===================================================================
+        # 2. 遍历所有样本，提取相应级别的数据
+        # ===================================================================
         for id, samp in dat.items():
+            # 如果不是全局级别，初始化位置字典
             if int(mod[-1]) > 0:
                 self.position[id] = {}
+            
+            # 遍历当前级别的所有字段
             for jd, fields in samp[mod].items():
+                # 添加渗透率和Darcy压力场
                 perm.append(fields["permeability"][None, None, ...])
                 darc.append(fields["darcy"][None, None, ...])
 
-                if int(mod[-1]) > 0:  # if not on global level
-                    xy_size = perm[-1].shape[-1]
-                    pos = fields["pos"]
-                    self.position[id][jd] = pos
+                # 如果不是全局级别（ref0），需要处理父级预测
+                if int(mod[-1]) > 0:
+                    xy_size = perm[-1].shape[-1]  # 获取空间尺寸
+                    pos = fields["pos"]           # 获取位置信息
+                    self.position[id][jd] = pos   # 保存位置信息
+                    
+                    # 根据模式获取父级预测
                     if self.mode == "eval":
+                        # 评估模式：使用传入的父级预测
                         parent = parent_prediction[int(id), 0, ...]
                     elif self.mode == "train":
+                        # 训练模式：从数据中获取父级真实值并归一化
                         parent = (
                             samp[f"ref{int(mod[-1]) - 1}"]["0"]["darcy"]
                             - self.norm["darcy"][0]
                         ) / self.norm["darcy"][1]
+                    
+                    # 提取父级预测的局部区域
                     par_pred.append(
                         parent[
                             pos[0] : pos[0] + xy_size,
@@ -122,43 +171,84 @@ class NestedDarcyDataset:
                         ][None, None, ...]
                     )
 
+        # ===================================================================
+        # 3. 数据归一化和组装
+        # ===================================================================
+        # 归一化渗透率数据
         perm = (
             np.concatenate(perm, axis=0) - self.norm["permeability"][0]
         ) / self.norm["permeability"][1]
+        
+        # 归一化Darcy压力数据
         darc = (np.concatenate(darc, axis=0) - self.norm["darcy"][0]) / self.norm[
             "darcy"
         ][1]
 
+        # 如果不是全局级别，需要组装父级预测和当前渗透率
         if int(mod[-1]) > 0:
             par_pred = np.concatenate(par_pred, axis=0)
+            # 将父级预测和渗透率拼接：通道0=父级预测，通道1=渗透率
             perm = np.concatenate((par_pred, perm), axis=1)
 
+        # ===================================================================
+        # 4. 转换为PyTorch张量并移动到设备
+        # ===================================================================
         self.invars = torch.from_numpy(perm).float().to(self.dist.device)
         self.outvars = torch.from_numpy(darc).float().to(self.dist.device)
 
+        # 记录数据集长度
         self.length = self.invars.size()[0]
+        
+        """
+        数据维度说明：
+        - ref0: invars [N, 1, 256, 256], outvars [N, 1, 256, 256]
+        - ref1: invars [N, 2, 128, 128], outvars [N, 1, 128, 128]
+        - 其中N是样本数量
+        """
 
     def __getitem__(self, idx: int):
+        """
+        获取指定索引的样本
+        
+        Parameters
+        ----------
+        idx : int
+            样本索引
+            
+        Returns
+        -------
+        dict
+            包含"permeability"和"darcy"键的字典
+        """
         return {"permeability": self.invars[idx, ...], "darcy": self.outvars[idx, ...]}
 
     def __len__(self):
+        """
+        返回数据集长度
+        
+        Returns
+        -------
+        int
+            数据集中的样本数量
+        """
         return self.length
 
 
 class GridValidator:
-    """Grid Validator
-
-    The validator compares model output and target, inverts normalisation and plots a sample
-
+    """
+    网格验证器类
+    
+    验证器比较模型输出和目标，反归一化数据并绘制样本图像。
+    这是PhysicsNeMo中用于验证模型性能的核心组件。
+    
     Parameters
     ----------
     loss_fun : MSELoss
-        loss function for assessing validation error
+        用于评估验证误差的损失函数
     norm : Dict, optional
-        mean and standard deviation for each channel to normalise input and target
+        用于归一化输入和目标的每个通道的均值和标准差
     font_size : float, optional
-        font size used in figures
-
+        图像中使用的字体大小
     """
 
     def __init__(
@@ -167,10 +257,26 @@ class GridValidator:
         norm: dict = {"permeability": (0.0, 1.0), "darcy": (0.0, 1.0)},
         font_size: float = 28.0,
     ) -> None:
+        # 存储归一化参数 - 用于反归一化数据
         self.norm = norm
+        
+        # 存储损失函数 - 用于计算验证误差
         self.criterion = loss_fun
+        
+        # 设置图像字体大小
         self.font_size = font_size
+        
+        # 定义图像标题
         self.headers = ("invar", "truth", "prediction", "relative error")
+        
+        """
+        归一化参数说明：
+        - permeability: 渗透率场的归一化参数 (mean, std)
+        - darcy: Darcy压力场的归一化参数 (mean, std)
+        
+        反归一化公式：
+        original_value = normalized_value * std + mean
+        """
 
     def compare(
         self,
@@ -180,50 +286,79 @@ class GridValidator:
         step: int,
         logger: LaunchLogger,
     ) -> float:
-        """compares model output, target and plots everything
-
+        """
+        比较模型输出和目标，绘制验证图像
+        
+        这个函数执行以下步骤：
+        1. 计算验证损失
+        2. 反归一化数据
+        3. 生成可视化图像
+        4. 记录到MLFlow
+        
         Parameters
         ----------
         invar : FloatTensor
-            input to model
+            模型输入（渗透率场或渗透率+父级预测）
         target : FloatTensor
-            ground truth
+            真实压力场
         prediction : FloatTensor
-            model output
+            模型预测结果
         step : int
-            iteration counter
+            迭代计数器（用于文件命名）
         logger : LaunchLogger
-            logger to which figure is passed
-
+            用于记录图像的日志器
+            
         Returns
         -------
         float
-            validation error
+            验证误差（损失值）
         """
+        # ===================================================================
+        # 1. 计算验证损失
+        # ===================================================================
         loss = self.criterion(prediction, target)
         norm = self.norm
 
-        # pick first sample from batch
+        # ===================================================================
+        # 2. 反归一化数据用于可视化
+        # ===================================================================
+        # 反归一化输入变量
         invar = invar * norm["permeability"][1] + norm["permeability"][0]
+        # 反归一化目标变量
         target = target * norm["darcy"][1] + norm["darcy"][0]
+        # 反归一化预测结果
         prediction = prediction * norm["darcy"][1] + norm["darcy"][0]
-        invar = invar.cpu().numpy()[0, -1, :, :]
-        target = target.cpu().numpy()[0, 0, :, :]
-        prediction = prediction.detach().cpu().numpy()[0, 0, :, :]
+        
+        # 转换为numpy数组并选择第一个样本
+        # 注意：invar使用[-1]索引，因为可能包含多个通道
+        invar = invar.cpu().numpy()[0, -1, :, :]  # 选择最后一个通道
+        target = target.cpu().numpy()[0, 0, :, :]  # 选择第一个通道
+        prediction = prediction.detach().cpu().numpy()[0, 0, :, :]  # 选择第一个通道
 
-        plt.close("all")
+        # ===================================================================
+        # 3. 生成可视化图像
+        # ===================================================================
+        plt.close("all")  # 关闭之前的图像以释放内存
         plt.rcParams.update({"font.size": self.font_size})
+        
+        # 创建1行4列的子图
         fig, ax = plt.subplots(1, 4, figsize=(15 * 3.5, 15), sharey=True)
         im = []
-        im.append(ax[0].imshow(invar))
-        im.append(ax[1].imshow(target))
-        im.append(ax[2].imshow(prediction))
-        im.append(ax[3].imshow((prediction - target) / norm["darcy"][1]))
+        
+        # 绘制四个图像：输入、真实值、预测值、相对误差
+        im.append(ax[0].imshow(invar))                    # 输入渗透率
+        im.append(ax[1].imshow(target))                   # 真实压力场
+        im.append(ax[2].imshow(prediction))               # 预测压力场
+        im.append(ax[3].imshow((prediction - target) / norm["darcy"][1]))  # 相对误差
 
+        # 为每个子图添加颜色条和标题
         for ii in range(len(im)):
             fig.colorbar(im[ii], ax=ax[ii], location="bottom", fraction=0.046, pad=0.04)
             ax[ii].set_title(self.headers[ii])
 
+        # ===================================================================
+        # 4. 记录图像到MLFlow
+        # ===================================================================
         logger.log_figure(figure=fig, artifact_file=f"validation_step_{step:03d}.png")
 
         return loss

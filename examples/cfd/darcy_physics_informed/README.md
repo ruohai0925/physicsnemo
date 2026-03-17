@@ -29,7 +29,7 @@ pip install -r requirements.txt
 python download_data.py
 ```
 
-Do demonstrate the usefulness of the Physics loss, we will deliberately choose a smaller
+To demonstrate the usefulness of the Physics loss, we will deliberately choose a smaller
 dataset size of 100 samples. In such regiemes, the effect of physics loss is more
 evident, as it regularizes the model in the absence of large data.
 

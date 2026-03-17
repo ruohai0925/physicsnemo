@@ -14,6 +14,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Darcy流问题的固定数据集数据管道
+
+本模块实现了Darcy2D_fix数据管道，用于加载预生成的Darcy流数据集。
+与在线生成数据的Darcy2D不同，本数据管道从预保存的.mat或.npz文件中加载数据。
+
+主要功能：
+1. 从文件加载预生成的渗透率和压力场数据
+2. 数据归一化和预处理
+3. 支持下采样到不同分辨率
+4. 提供训练和测试数据迭代器
+
+数据格式：
+- 输入：渗透率场 k(x,y) - 形状 [batch, height, width]
+- 输出：压力场 p(x,y) - 形状 [batch, height, width]
+- 位置：网格坐标 (x,y) - 形状 [height*width, 2]
+
+作者：PhysicsNeMo团队
+"""
+
 from dataclasses import dataclass
 from typing import Dict, Tuple, Union
 
@@ -31,40 +51,87 @@ from physicsnemo.utils.profiling import profile
 
 
 class UnitTransformer:
-    """Unit transformer class for normalizing and denormalizing data."""
+    """
+    数据归一化和反归一化转换器
+    
+    用于对数据进行标准化处理，将数据转换为均值为0、标准差为1的分布。
+    支持编码（归一化）和解码（反归一化）操作。
+    """
 
     def __init__(self, X):
+        """
+        初始化归一化器
+        
+        参数:
+            X: 输入数据张量，用于计算均值和标准差
+        """
+        # 计算数据的均值和标准差（在batch和空间维度上）
         self.mean = X.mean(dim=(0, 1), keepdim=True)
-        self.std = X.std(dim=(0, 1), keepdim=True) + 1e-8
+        self.std = X.std(dim=(0, 1), keepdim=True) + 1e-8  # 添加小值避免除零
 
     def to(self, device):
+        """将归一化器参数移动到指定设备"""
         self.mean = self.mean.to(device)
         self.std = self.std.to(device)
         return self
 
     def cuda(self):
+        """将归一化器参数移动到CUDA设备"""
         self.mean = self.mean.cuda()
         self.std = self.std.cuda()
 
     def cpu(self):
+        """将归一化器参数移动到CPU设备"""
         self.mean = self.mean.cpu()
         self.std = self.std.cpu()
 
     def encode(self, x):
+        """
+        编码（归一化）数据
+        
+        参数:
+            x: 输入数据
+            
+        返回:
+            归一化后的数据：(x - mean) / std
+        """
         x = (x - self.mean) / (self.std)
         return x
 
     def decode(self, x):
+        """
+        解码（反归一化）数据
+        
+        参数:
+            x: 归一化的数据
+            
+        返回:
+            反归一化后的数据：x * std + mean
+        """
         return x * self.std + self.mean
 
     def transform(self, X, inverse=True, component="all"):
+        """
+        通用转换函数
+        
+        参数:
+            X: 输入数据
+            inverse: 是否进行反归一化（True）或归一化（False）
+            component: 要处理的组件（"all"表示所有组件）
+            
+        返回:
+            转换后的数据
+        """
         if component == "all" or "all-reduce":
             if inverse:
+                # 反归一化
                 orig_shape = X.shape
                 return (X * (self.std - 1e-8) + self.mean).view(orig_shape)
             else:
+                # 归一化
                 return (X - self.mean) / self.std
         else:
+            # 处理特定组件
             if inverse:
                 orig_shape = X.shape
                 return (

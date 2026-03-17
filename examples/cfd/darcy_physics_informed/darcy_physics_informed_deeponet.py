@@ -14,6 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ===================================================================
+# 导入必要的库和模块
+# ===================================================================
 from itertools import chain
 from typing import Dict
 
@@ -36,45 +39,92 @@ from torch.utils.data import DataLoader
 
 from utils import HDF5MapStyleDataset
 
+"""
+Physics-Informed DeepONet训练脚本说明：
+- 这是使用自动微分方法计算物理损失的Physics-Informed DeepONet实现
+- 使用FNO作为Branch网络，FC作为Trunk网络
+- 通过PhysicsNeMo Sym的自动微分计算PDE残差
+- 需要坐标输入设置requires_grad=True以支持梯度计算
+"""
+
 
 def validation_step(graph, dataloader, epoch):
-    """Validation Step"""
+    """
+    DeepONet验证步骤函数
+    
+    在验证集上评估DeepONet模型性能，生成可视化结果。
+    
+    Parameters
+    ----------
+    graph : MdlsSymWrapper
+        训练好的DeepONet模型（包装器）
+    dataloader : DataLoader
+        验证数据加载器
+    epoch : int
+        当前epoch数
+        
+    Returns
+    -------
+    float
+        平均验证损失
+    """
 
-    with torch.no_grad():
+    with torch.no_grad():  # 禁用梯度计算
         loss_epoch = 0
+        # 遍历验证数据
         for data in dataloader:
-            invar, outvar, x_invar, y_invar = data
+            invar, outvar, x_invar, y_invar = data  # 解包数据
+            
+            # DeepONet前向传播
             out = graph.forward(
-                {"k_prime": invar[:, 0].unsqueeze(dim=1), "x": x_invar, "y": y_invar}
+                {
+                    "k_prime": invar[:, 0].unsqueeze(dim=1),  # 渗透率输入
+                    "x": x_invar,                             # x坐标
+                    "y": y_invar                              # y坐标
+                }
             )
 
-            deepo_out_u = out["u"]
+            deepo_out_u = out["u"]  # 获取压力场输出
 
+            # 累积MSE损失
             loss_epoch += F.mse_loss(outvar, deepo_out_u)
 
-        # convert data to numpy
+        # ===================================================================
+        # 数据可视化
+        # ===================================================================
+        # 转换为numpy数组用于可视化
         outvar = outvar.detach().cpu().numpy()
         predvar = deepo_out_u.detach().cpu().numpy()
 
-        # plotting
+        # 创建1行3列的子图
         fig, ax = plt.subplots(1, 3, figsize=(25, 5))
 
+        # 计算颜色范围，确保真实值和预测值使用相同的颜色映射
         d_min = np.min(outvar[0, 0])
         d_max = np.max(outvar[0, 0])
 
+        # 绘制真实值
         im = ax[0].imshow(outvar[0, 0], vmin=d_min, vmax=d_max)
         plt.colorbar(im, ax=ax[0])
+        
+        # 绘制预测值
         im = ax[1].imshow(predvar[0, 0], vmin=d_min, vmax=d_max)
         plt.colorbar(im, ax=ax[1])
+        
+        # 绘制误差图
         im = ax[2].imshow(np.abs(predvar[0, 0] - outvar[0, 0]))
         plt.colorbar(im, ax=ax[2])
 
+        # 设置子图标题
         ax[0].set_title("True")
         ax[1].set_title("Pred")
         ax[2].set_title("Difference")
 
+        # 保存图像
         fig.savefig(f"results_{epoch}.png")
         plt.close()
+        
+        # 返回平均损失
         return loss_epoch / len(dataloader)
 
 
@@ -111,56 +161,131 @@ class MdlsSymWrapper(Arch):
         trunk_net=None,
         branch_net=None,
     ):
+        """
+        初始化DeepONet包装器
+        
+        Parameters
+        ----------
+        input_keys : list
+            输入键列表，定义模型输入
+        output_keys : list
+            输出键列表，定义模型输出
+        trunk_net : FullyConnected
+            Trunk网络，处理坐标信息
+        branch_net : FNO
+            Branch网络，处理渗透率场
+        """
         super().__init__(
             input_keys=input_keys,
             output_keys=output_keys,
         )
 
-        self.branch_net = branch_net
-        self.trunk_net = trunk_net
+        self.branch_net = branch_net  # FNO网络（Branch）
+        self.trunk_net = trunk_net    # 全连接网络（Trunk）
 
     def forward(self, dict_tensor: Dict[str, torch.Tensor]):
-        # Concatenate x, y inputs to feeed in the trunk network which has a MLP
+        """
+        DeepONet前向传播
+        
+        实现DeepONet的前向传播：
+        1. Trunk网络处理坐标信息
+        2. Branch网络处理渗透率场
+        3. 两个网络的输出相乘得到最终结果
+        
+        Parameters
+        ----------
+        dict_tensor : Dict[str, torch.Tensor]
+            输入张量字典，包含"k_prime"（渗透率）、"x"（x坐标）、"y"（y坐标）
+            
+        Returns
+        -------
+        Dict[str, torch.Tensor]
+            输出张量字典，包含"k"（渗透率）和"u"（压力）
+        """
+        # ===================================================================
+        # 1. Trunk网络处理坐标信息
+        # ===================================================================
+        # 获取坐标输入的形状
         xy_input_shape = dict_tensor["x"].shape
+        
+        # 将x, y坐标连接起来，输入到Trunk网络（MLP）
         xy = self.concat_input(
             {
                 k: dict_tensor[k].view(xy_input_shape[0], -1, 1) for k in ["x", "y"]
-            },  # flatten the coordinate dimensions
+            },  # 展平坐标维度
             ["x", "y"],
             detach_dict=self.detach_key_dict,
-            dim=-1,  # concat along the last dimension to form the feature vector.
+            dim=-1,  # 沿最后一个维度连接以形成特征向量
         )
+        
+        # Trunk网络前向传播
         fc_out = self.trunk_net(xy)
 
-        # Pass the k-prime for the FNO input
+        # ===================================================================
+        # 2. Branch网络处理渗透率场
+        # ===================================================================
+        # 将渗透率场输入到Branch网络（FNO）
         fno_out = self.branch_net(dict_tensor["k_prime"])
 
-        # reshape the fc_out
+        # ===================================================================
+        # 3. 输出组合
+        # ===================================================================
+        # 重新整形fc_out以匹配空间维度
         fc_out = fc_out.view(
             xy_input_shape[0], -1, xy_input_shape[-2], xy_input_shape[-1]
         )
 
-        # multiply the outputs of branch and trunk networks to get the final output
+        # 将Branch和Trunk网络的输出相乘得到最终输出
+        # 这是DeepONet的核心操作：u(x,y) = Σ(branch_i * trunk_i(x,y))
         out = fc_out * fno_out
 
+        # 沿通道维度分割输出，得到张量字典
         return self.split_output(
             out, self.output_key_dict, dim=1
-        )  # Split along the channel dimension to get a dictionary of tensors
+        )
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config_deeponet.yaml")
 def main(cfg: DictConfig):
-    # CUDA support
+    """
+    Physics-Informed DeepONet主训练函数
+    
+    使用自动微分方法计算物理损失的Physics-Informed DeepONet训练。
+    
+    Parameters
+    ----------
+    cfg : DictConfig
+        Hydra配置对象，包含所有训练参数
+    """
+    # ===================================================================
+    # 1. 设备设置
+    # ===================================================================
+    # 检查CUDA可用性并设置设备
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
 
+    # 初始化日志系统
     LaunchLogger.initialize()
 
-    # Use Diffusion equation for the Darcy PDE
-    forcing_fn = 1.0 * 4.49996e00 * 3.88433e-03  # after scaling
+    # ===================================================================
+    # 2. 物理方程定义
+    # ===================================================================
+    # 使用Diffusion方程表示Darcy方程
+    # Darcy方程：∇·(k∇u) = f
+    # 其中：u是压力场，k是渗透率场，f是源项
+    forcing_fn = 1.0 * 4.49996e00 * 3.88433e-03  # 源项（经过缩放）
     darcy = Diffusion(T="u", time=False, dim=2, D="k", Q=forcing_fn)
+    
+    """
+    物理方程说明：
+    - T="u": 温度/压力场变量名为"u"
+    - time=False: 稳态问题，不包含时间项
+    - dim=2: 二维问题
+    - D="k": 扩散系数为渗透率场"k"
+    - Q=forcing_fn: 源项
+    """
 
     dataset = HDF5MapStyleDataset(
         to_absolute_path("./datasets/Darcy_241/train.hdf5"), device=device
