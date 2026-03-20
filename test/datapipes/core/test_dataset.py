@@ -480,6 +480,10 @@ class TestDatasetCancelPrefetch:
         # Prefetch count should be 0 after cancel
         assert dataset.prefetch_count == 0
 
+        # Close to ensure background threads release file handles before
+        # the temp directory is cleaned up (required on Windows).
+        dataset.close()
+
     def test_prefetch_cancel_specific(self, numpy_data_dir):
         """Test canceling a specific prefetch."""
         reader = dp.NumpyReader(numpy_data_dir)
@@ -497,6 +501,8 @@ class TestDatasetCancelPrefetch:
         assert metadata0["index"] == 0
         assert metadata1["index"] == 1
 
+        dataset.close()
+
     def test_prefetch_cancel_nonexistent_index(self, numpy_data_dir):
         """Test canceling a prefetch index that doesn't exist."""
         reader = dp.NumpyReader(numpy_data_dir)
@@ -510,6 +516,8 @@ class TestDatasetCancelPrefetch:
         # Original should still work
         data, metadata = dataset[0]
         assert metadata["index"] == 0
+
+        dataset.close()
 
 
 # ============================================================================
